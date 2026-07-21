@@ -31,10 +31,10 @@ license = { file = "LICENSE" }
 dependencies = [
     "nomad-lab>=1.3.16rc1",
     'nomad-baseclasses @ git+https://github.com/Jenny-Nelson-Group/nomad-baseclasses.git@94afad52d1d3632aaf1fc6d443d46eb6e4df0438',
-    'nomad-luqy-plugin @ git+https://github.com/Pepe-Marquez/nomad-luqy-plugin.git',
+    'nomad-luqy-plugin @ git+https://github.com/Pepe-Marquez/nomad-luqy-plugin.git@fcbee16c352d367512cb5312c66b34e3f5d21ac3',
     'nomad-measurements',
     'httpx==0.27.2',
-    'pynxtools-xps@git+https://github.com/FAIRmat-NFDI/pynxtools-xps.git']
+    'pynxtools-xps@git+https://github.com/FAIRmat-NFDI/pynxtools-xps.git@0ee6e199ecd9092a6154958a787f001f0235a69c']
 [project.urls]
 Repository = "https://github.com/nomad-hzb/nomad-hysprint"
 
