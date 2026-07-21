@@ -20,7 +20,7 @@ import ast
 import json
 import re
 from datetime import datetime
-from io import StringIO
+from io import BytesIO, StringIO
 
 import numpy as np
 import pandas as pd
@@ -276,7 +276,167 @@ def get_jv_data_iris_json(filedata):
     return jv_dict
 
 
+def get_jv_solar_sim_jn(filedata, nmbr_of_pixels=6):
+    filedata = filedata.replace('²', '^2')
+
+    df_header = pd.read_csv(
+        StringIO(filedata),
+        skiprows=0,
+        nrows=29,
+        header=None,
+        sep='\t',
+        index_col=0,
+        encoding='unicode_escape',
+        engine='python',
+    )
+
+    df_fom = pd.read_csv(
+        StringIO(filedata),
+        skiprows=30,
+        header=0,
+        nrows=11,
+        sep='\t',
+        index_col=0,
+        engine='python',
+        encoding='unicode_escape',
+    )
+
+    df_curves = pd.read_csv(
+        StringIO(filedata),
+        skiprows=43,
+        header=0,
+        sep='\t',
+        encoding='unicode_escape',
+        engine='python',
+    )
+
+    df_curves = df_curves.dropna(how='all', axis=1)
+
+    df_header.replace([np.inf, -np.inf, np.nan], 0, inplace=True)
+    df_fom.replace([np.inf, -np.inf, np.nan], 0, inplace=True)
+
+    jv_dict = {}
+    jv_dict['datetime'] = convert_datetime(df_header.iloc[0, 0], '%H:%M:%S - %d.%m.%Y')
+    jv_dict['active_area'] = list(ast.literal_eval(df_header.iloc[12, 0]))[0]
+    jv_dict['intensity'] = float(df_header.iloc[15, 0])
+    jv_dict['V_oc'] = list(df_fom.iloc[0].astype(np.float64))
+    jv_dict['J_sc'] = list(abs(df_fom.iloc[1].astype(np.float64)))
+    jv_dict['Fill_factor'] = list(df_fom.iloc[2].astype(np.float64))
+    jv_dict['Efficiency'] = list(df_fom.iloc[3].astype(np.float64))
+    jv_dict['U_MPP'] = list(df_fom.iloc[4].astype(np.float64))
+    jv_dict['J_MPP'] = list(abs(df_fom.iloc[5].astype(np.float64)))
+    jv_dict['R_ser'] = list(df_fom.iloc[7].astype(np.float64))
+    jv_dict['R_par'] = list(df_fom.iloc[8].astype(np.float64))
+
+    jv_dict['jv_curve'] = []
+
+    for column in range(0, len(df_curves.columns) // 2):
+        jv_dict['jv_curve'].append(
+            {
+                'name': '_'.join(df_curves.columns[2 * column].split('_')[-3:]),
+                'voltage': df_curves[df_curves.columns[2 * column]].values,
+                'current_density': df_curves[df_curves.columns[2 * column + 1]].values,
+            }
+        )
+
+    return jv_dict
+
+
+def find_max_power_point(voltage, current_density):
+    """Return (voltage, current_density) magnitudes at the max power point of a jv curve."""
+    voltage = np.asarray(voltage, dtype=np.float64)
+    current_density = np.asarray(current_density, dtype=np.float64)
+    power = voltage * current_density
+    generating = power < 0
+    if generating.any():
+        candidates = np.where(generating)[0]
+        idx = candidates[np.argmax(np.abs(power[candidates]))]
+    else:
+        idx = int(np.argmin(power))
+    return abs(voltage[idx]), abs(current_density[idx])
+
+
+def calculate_resistances(voltage, current_density, voc, window=3):
+    """
+    Series resistance from the local dV/dJ slope of the curve at V=voc,
+    shunt resistance from the local dV/dJ slope at V=0. current_density
+    must be in mA/cm^2; result is in ohm*cm^2.
+    """
+    voltage = np.asarray(voltage, dtype=np.float64)
+    current_density = np.asarray(current_density, dtype=np.float64)
+    order = np.argsort(voltage)
+    voltage = voltage[order]
+    current_density = current_density[order]
+
+    def local_slope(idx):
+        lo = max(idx - window, 0)
+        hi = min(idx + window + 1, len(voltage))
+        slope, _ = np.polyfit(current_density[lo:hi], voltage[lo:hi], 1)
+        return abs(slope) * 1000  # V/(mA/cm^2) -> ohm*cm^2
+
+    voc_idx = int(np.argmin(np.abs(voltage - voc)))
+    jsc_idx = int(np.argmin(np.abs(voltage)))
+
+    return local_slope(voc_idx), local_slope(jsc_idx)
+
+
+def get_jv_data_solar_sim_jn_excel(filedata):
+    """Parses the JN solar simulator '<sample> Light Data.xlsx' export."""
+    df = pd.read_excel(BytesIO(filedata), sheet_name=0, header=None)
+
+    jv_dict = {}
+    jv_dict['datetime'] = df.iloc[0, 1]
+    jv_dict['active_area'] = float(df.iloc[1, 1]) / 100  # mm^2 -> cm^2
+
+    n_pixels = 0
+    row = 5
+    while row < len(df) and isinstance(df.iloc[row, 0], str) and df.iloc[row, 0].startswith('Pixel'):
+        n_pixels += 1
+        row += 1
+
+    v_oc = [float(df.iloc[5 + p, 2]) for p in range(n_pixels)]
+    jv_dict['V_oc'] = v_oc
+    jv_dict['J_sc'] = [abs(float(df.iloc[5 + p, 1])) * 1000 for p in range(n_pixels)]  # A/cm^2 -> mA/cm^2
+    jv_dict['Fill_factor'] = [float(df.iloc[5 + p, 3]) for p in range(n_pixels)]
+    jv_dict['Efficiency'] = [float(df.iloc[5 + p, 4]) for p in range(n_pixels)]
+
+    curve_header_row = 5 + n_pixels + 1
+    df_curves = pd.read_excel(BytesIO(filedata), sheet_name=0, header=curve_header_row)
+    df_curves = df_curves.dropna(how='all', axis=1)
+
+    jv_dict['jv_curve'] = []
+    u_mpp, j_mpp, r_ser, r_par = [], [], [], []
+    for pixel in range(n_pixels):
+        voltage = df_curves.iloc[:, 2 * pixel].astype(np.float64).values
+        current_density = df_curves.iloc[:, 2 * pixel + 1].astype(np.float64).values * 1000  # A/cm^2 -> mA/cm^2
+
+        jv_dict['jv_curve'].append(
+            {
+                'name': f'Pixel {pixel + 1}',
+                'voltage': voltage,
+                'current_density': current_density,
+            }
+        )
+
+        mpp_v, mpp_j = find_max_power_point(voltage, current_density)
+        u_mpp.append(mpp_v)
+        j_mpp.append(mpp_j)
+
+        ser, par = calculate_resistances(voltage, current_density, v_oc[pixel])
+        r_ser.append(ser)
+        r_par.append(par)
+
+    jv_dict['U_MPP'] = u_mpp
+    jv_dict['J_MPP'] = j_mpp
+    jv_dict['R_ser'] = r_ser
+    jv_dict['R_par'] = r_par
+
+    return jv_dict
+
+
 def get_jv_data(filedata, filename=None):
+    if filename and filename.lower().endswith('.xlsx'):
+        return get_jv_data_solar_sim_jn_excel(filedata), 'JN Solar Simulator'
     if filedata.startswith('Keithley'):
         return get_jv_data_hysprint(filedata, filename), 'HySprint HyVap'
     if 'SoSim PVcomB' in filedata:
