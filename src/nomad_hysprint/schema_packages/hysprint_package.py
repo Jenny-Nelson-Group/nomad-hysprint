@@ -1139,15 +1139,10 @@ class HySprint_JVmeasurement(JVMeasurement, EntryData):
             search_id = self.data_file.split('.')[0]
             set_sample_reference(archive, self, search_id, upload_id=archive.metadata.upload_id)
         if self.data_file:
-            # todo detect file format
-            if self.data_file.lower().endswith('.xlsx'):
-                with archive.m_context.raw_file(self.data_file, 'br') as f:
-                    content = f.read()
-            else:
-                with archive.m_context.raw_file(self.data_file, 'br') as f:
-                    encoding = get_encoding(f)
-                with archive.m_context.raw_file(self.data_file, 'tr', encoding=encoding) as f:
-                    content = f.read()
+            with archive.m_context.raw_file(self.data_file, 'br') as f:
+                encoding = get_encoding(f)
+            with archive.m_context.raw_file(self.data_file, 'tr', encoding=encoding) as f:
+                content = f.read()
 
             jv_dict, location = get_jv_data(content, self.data_file)
             if jv_dict:

@@ -20,7 +20,7 @@ import ast
 import json
 import re
 from datetime import datetime
-from io import BytesIO, StringIO
+from io import StringIO
 
 import numpy as np
 import pandas as pd
@@ -380,9 +380,45 @@ def calculate_resistances(voltage, current_density, voc, window=3):
     return local_slope(voc_idx), local_slope(jsc_idx)
 
 
-def get_jv_data_solar_sim_jn_excel(filedata):
-    """Parses the JN solar simulator '<sample> Light Data.xlsx' export."""
-    df = pd.read_excel(BytesIO(filedata), sheet_name=0, header=None)
+def get_jv_data_solar_sim_gui_csv(filedata):
+    """Parses the Imperial/Jenny Nelson SolarSim GUI's own CSV export
+    ('<name> Data.csv', written by SolarSim GUI_new_swicthbox_*.py).
+
+    Row layout (matches the JN solar simulator xlsx export this replaces,
+    just serialized as CSV text instead of an Excel sheet):
+      row 0: "Date & Time,<value>"
+      row 1: "Pixel Area (mm^2),<value>"
+      row 2: "Scan Rate (NPLC),<value>"
+      row 3: blank
+      row 4: FoM header ("...,J_{sc} (A/cm^2),V_{oc} (V),FF,PCE (%)")
+      rows 5..5+n-1: one row per measured pixel
+      row 5+n: blank
+      row 5+n+1: curve header, followed by the voltage/current_density columns
+
+    Unit note: unlike the raw jv_curve columns below (still in A/cm^2, as
+    measured), the GUI has already pre-scaled the FoM table before writing
+    it - see SolarSim GUI's start_IV_button_command, which builds cellText
+    from J_sc*1000 (so despite the "(A/cm^2)" column header, the value on
+    disk is actually mA/cm^2 already) and FF*100 (a percentage, not a 0-1
+    fraction). This function accounts for that so jv_dict ends up in this
+    codebase's usual units (J_sc/current_density in mA/cm^2, Fill_factor
+    as a 0-1 fraction) either way.
+    """
+    # skip_blank_lines=False keeps the blank separator lines as real rows,
+    # so the row numbers above line up with the file's actual line numbers
+    # (pandas silently drops blank lines by default, which would otherwise
+    # shift every row index below by one).
+    # The file's blocks have different widths (the datetime/area/scan-rate
+    # rows have 2 fields, the FoM rows have 5, the curve rows have 2*n) -
+    # with header=None pandas infers the column count from the first line
+    # and errors on later, wider lines, so an explicit wide `names=` is
+    # needed to let every row parse regardless of its own width (shorter
+    # rows are padded with NaN).
+    lines = filedata.splitlines()
+    max_cols = max((line.count(',') + 1 for line in lines), default=1)
+    df = pd.read_csv(
+        StringIO(filedata), header=None, skip_blank_lines=False, names=range(max_cols)
+    )
 
     jv_dict = {}
     jv_dict['datetime'] = df.iloc[0, 1]
@@ -396,17 +432,19 @@ def get_jv_data_solar_sim_jn_excel(filedata):
 
     v_oc = [float(df.iloc[5 + p, 2]) for p in range(n_pixels)]
     jv_dict['V_oc'] = v_oc
-    jv_dict['J_sc'] = [abs(float(df.iloc[5 + p, 1])) * 1000 for p in range(n_pixels)]  # A/cm^2 -> mA/cm^2
-    jv_dict['Fill_factor'] = [float(df.iloc[5 + p, 3]) for p in range(n_pixels)]
+    jv_dict['J_sc'] = [abs(float(df.iloc[5 + p, 1])) for p in range(n_pixels)]  # already mA/cm^2 on disk
+    jv_dict['Fill_factor'] = [float(df.iloc[5 + p, 3]) / 100 for p in range(n_pixels)]  # percent -> fraction
     jv_dict['Efficiency'] = [float(df.iloc[5 + p, 4]) for p in range(n_pixels)]
 
     curve_header_row = 5 + n_pixels + 1
-    df_curves = pd.read_excel(BytesIO(filedata), sheet_name=0, header=curve_header_row)
+    df_curves = pd.read_csv(StringIO(filedata), header=curve_header_row, skip_blank_lines=False)
     df_curves = df_curves.dropna(how='all', axis=1)
 
     jv_dict['jv_curve'] = []
     u_mpp, j_mpp, r_ser, r_par = [], [], [], []
     for pixel in range(n_pixels):
+        # Unlike the FoM table above, the raw curve columns are written
+        # straight from current_dens and are genuinely still in A/cm^2.
         voltage = df_curves.iloc[:, 2 * pixel].astype(np.float64).values
         current_density = df_curves.iloc[:, 2 * pixel + 1].astype(np.float64).values * 1000  # A/cm^2 -> mA/cm^2
 
@@ -435,8 +473,8 @@ def get_jv_data_solar_sim_jn_excel(filedata):
 
 
 def get_jv_data(filedata, filename=None):
-    if filename and filename.lower().endswith('.xlsx'):
-        return get_jv_data_solar_sim_jn_excel(filedata), 'JN Solar Simulator'
+    if filedata.startswith('Date & Time'):
+        return get_jv_data_solar_sim_gui_csv(filedata), 'SolarSim GUI'
     if filedata.startswith('Keithley'):
         return get_jv_data_hysprint(filedata, filename), 'HySprint HyVap'
     if 'SoSim PVcomB' in filedata:
