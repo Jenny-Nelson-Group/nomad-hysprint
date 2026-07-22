@@ -136,7 +136,7 @@ class HySprintParser(MatchingParser):
             self._parse_xmstudio_hy_data(mainfile, file, archive, mainfile_split[0])
             return
 
-        if mainfile_split[-1].lower() in ['txt', 'json', 'xlsx'] and measurment_type.lower() == 'jv':
+        if mainfile_split[-1].lower() in ['txt', 'json', 'xlsx', 'csv'] and measurment_type.lower() == 'jv':
             entry = HySprint_JVmeasurement()
         if mainfile_split[-1].lower() == 'txt' and measurment_type.lower() == 'abspl':
             entry = HySprint_AbsPLMeasurement()
